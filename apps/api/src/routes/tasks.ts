@@ -8,6 +8,7 @@ import * as dependencyService from "../services/dependency-service.js";
 import * as unifiedTaskService from "../services/unified-task-service.js";
 import * as taskConfigService from "../services/task-config-service.js";
 import * as workflowService from "../services/workflow-service.js";
+import * as repoService from "../services/repo-service.js";
 import { taskQueue } from "../workers/task-worker.js";
 import { db } from "../db/client.js";
 import { tasks } from "../db/schema.js";
@@ -504,14 +505,19 @@ export async function taskRoutes(rawApp: FastifyInstance) {
         return reply.status(400).send({ error: "repo-task requires `title`" });
       }
       const { dependsOn, type: _t, name: _n, description: _d, enabled: _e, ...taskInput } = input;
-
-      let resolvedAgentType: string = taskInput.agentType ?? "";
-      if (!resolvedAgentType) {
-        const repoConfig = await import("../services/repo-service.js").then((m) =>
-          m.getRepoByUrl(taskInput.repoUrl!, req.user?.workspaceId ?? null),
-        );
-        resolvedAgentType = repoConfig?.defaultAgentType ?? "claude-code";
+      const workspaceId = req.user?.workspaceId ?? null;
+      const repoConfig = await repoService.getRepoByUrl(taskInput.repoUrl!, workspaceId);
+      if (!repoConfig) {
+        return reply.status(400).send({ error: "Repo must be configured before creating tasks" });
       }
+      if (!repoConfig.customDockerImageUrl?.trim()) {
+        return reply.status(400).send({
+          error: "Repo customDockerImageUrl is required before creating tasks",
+        });
+      }
+
+      const resolvedAgentType: string =
+        taskInput.agentType ?? repoConfig.defaultAgentType ?? "claude-code";
 
       const task = await taskService.createTask({
         title: taskInput.title!,
@@ -525,7 +531,7 @@ export async function taskRoutes(rawApp: FastifyInstance) {
         maxRetries: taskInput.maxRetries,
         priority: taskInput.priority,
         createdBy: req.user?.id,
-        workspaceId: req.user?.workspaceId ?? null,
+        workspaceId,
       });
       logAction({
         userId: req.user?.id,

@@ -1,10 +1,28 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import {
   buildAgentCommand,
+  buildRepoImageConfig,
   buildInitialClaudeStreamMessage,
   inferExitCode,
   shouldEscalateNoPr,
 } from "./task-worker.js";
+
+describe("buildRepoImageConfig", () => {
+  it("uses repo customDockerImageUrl as the pod custom image", () => {
+    expect(
+      buildRepoImageConfig({
+        customDockerImageUrl: "registry.internal/optio/claude-sandbox:main",
+        imagePreset: "node",
+      }),
+    ).toEqual({ customImage: "registry.internal/optio/claude-sandbox:main" });
+  });
+
+  it("falls back to the preset image when no custom image is configured", () => {
+    expect(buildRepoImageConfig({ customDockerImageUrl: null, imagePreset: "node" })).toEqual({
+      preset: "node",
+    });
+  });
+});
 
 describe("buildAgentCommand", () => {
   describe("claude-code agent", () => {

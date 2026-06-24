@@ -262,6 +262,7 @@ export const api = {
     fullName: string;
     defaultBranch?: string;
     isPrivate?: boolean;
+    customDockerImageUrl?: string;
   }) => request<{ repo: any }>("/api/repos", { method: "POST", body: JSON.stringify(data) }),
 
   updateRepo: (id: string, data: Record<string, unknown>) =>
@@ -363,13 +364,13 @@ export const api = {
       { method: "POST", body: JSON.stringify({ token }) },
     ),
 
-  validateGitlabToken: (token: string, host?: string) =>
+  validateGitlabToken: (token: string, baseUrl?: string) =>
     request<{ valid: boolean; error?: string; user?: { login: string; name: string } }>(
       "/api/setup/validate/gitlab-token",
-      { method: "POST", body: JSON.stringify({ token, host }) },
+      { method: "POST", body: JSON.stringify({ token, baseUrl }) },
     ),
 
-  listGitlabRepos: (token: string, host?: string) =>
+  listGitlabRepos: (token: string, baseUrl?: string) =>
     request<{
       repos: Array<{
         fullName: string;
@@ -383,7 +384,7 @@ export const api = {
       error?: string;
     }>("/api/setup/repos/gitlab", {
       method: "POST",
-      body: JSON.stringify({ token, host }),
+      body: JSON.stringify({ token, baseUrl }),
     }),
 
   validateAwsCredentials: (creds: {
@@ -426,6 +427,18 @@ export const api = {
       body: JSON.stringify({ key }),
     }),
 
+  validateClaudeGateway: (baseUrl: string, token: string) =>
+    request<{ valid: boolean; error?: string }>("/api/setup/validate/claude-gateway", {
+      method: "POST",
+      body: JSON.stringify({ baseUrl, token }),
+    }),
+
+  validateJiraPat: (baseUrl: string, token: string) =>
+    request<{ valid: boolean; error?: string; user?: { login: string; name: string } }>(
+      "/api/setup/validate/jira-pat",
+      { method: "POST", body: JSON.stringify({ baseUrl, token }) },
+    ),
+
   validateOpenAIKey: (key: string) =>
     request<{ valid: boolean; error?: string }>("/api/setup/validate/openai-key", {
       method: "POST",
@@ -452,6 +465,12 @@ export const api = {
     }>("/api/setup/validate/repo", {
       method: "POST",
       body: JSON.stringify({ repoUrl, token }),
+    }),
+
+  runJiraIssue: (data: { repoId: string; issueKey: string }) =>
+    request<{ task: any }>("/api/jira/run-issue", {
+      method: "POST",
+      body: JSON.stringify(data),
     }),
 
   getAuthStatus: () =>

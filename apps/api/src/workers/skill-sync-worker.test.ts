@@ -2,6 +2,7 @@ import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { tmpdir } from "node:os";
+import process from "node:process";
 
 // Override the cache dir before importing the worker so readInstalledSkillFiles
 // looks at our scratch dir, not /opt/optio/skills-cache.
@@ -50,8 +51,11 @@ describe("readInstalledSkillFiles", () => {
     const files = await readInstalledSkillFiles(sha, ".");
     const byPath = Object.fromEntries(files.map((f) => [f.relativePath, f]));
     expect(Object.keys(byPath).sort()).toEqual(["SKILL.md", "reference.md", "scripts/helper.sh"]);
-    expect(byPath["scripts/helper.sh"].executable).toBe(true);
-    expect(byPath["SKILL.md"].executable).toBe(false);
+    // On Windows, chmod doesn't set Unix executable bits, so stat.mode won't have 0o111
+    if (process.platform !== "win32") {
+      expect(byPath["scripts/helper.sh"].executable).toBe(true);
+      expect(byPath["SKILL.md"].executable).toBe(false);
+    }
     expect(byPath["SKILL.md"].content.toString("utf8")).toMatch(/^---/);
   });
 

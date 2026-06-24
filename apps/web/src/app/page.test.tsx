@@ -29,6 +29,7 @@ vi.mock("@/components/dashboard", () => ({
   WelcomeHero: () => <div data-testid="welcome-hero" />,
   PerformanceSummary: () => null,
   AgentComparison: () => null,
+  JiraIssueRunCard: () => <div data-testid="jira-run-card" />,
   FailureInsights: () => null,
 }));
 

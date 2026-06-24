@@ -8,6 +8,7 @@ export { WelcomeHero } from "./welcome-hero.js";
 export { EmptyState } from "./empty-state.js";
 export { AgentComparison } from "./agent-comparison.js";
 export { RecentActivity } from "./recent-activity.js";
+export { JiraIssueRunCard } from "./jira-issue-run-card.js";
 export type {
   TaskStats,
   StandaloneStats,

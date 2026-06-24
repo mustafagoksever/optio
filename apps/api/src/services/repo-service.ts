@@ -1,7 +1,7 @@
 import { eq, and, isNull } from "drizzle-orm";
 import { db } from "../db/client.js";
 import { repos, workspaces } from "../db/schema.js";
-import { encrypt, decrypt, ALG_AES_256_GCM_V1 } from "./secret-service.js";
+import { encrypt, decrypt, ALG_AES_256_GCM_V1, retrieveSecret } from "./secret-service.js";
 import { normalizeRepoUrl, parseRepoUrl } from "@optio/shared";
 
 export interface RepoRecord {
@@ -13,6 +13,7 @@ export interface RepoRecord {
   defaultBranch: string;
   isPrivate: boolean;
   imagePreset: string | null;
+  customDockerImageUrl: string | null;
   extraPackages: string | null;
   setupCommands: string | null;
   customDockerfile: string | null;
@@ -120,6 +121,31 @@ async function getDefaultWorkspaceId(): Promise<string | null> {
   return ws?.id ?? null;
 }
 
+function normalizeUrlWithScheme(value: string): string {
+  return /^https?:\/\//i.test(value) ? value : `https://${value}`;
+}
+
+async function detectGitPlatform(repoUrl: string, workspaceId?: string | null): Promise<string> {
+  const parsedUrl = parseRepoUrl(repoUrl);
+  let gitPlatform = parsedUrl?.platform ?? "github";
+  if (gitPlatform === "github" && parsedUrl?.host) {
+    const gitlabBaseUrl = await retrieveSecret(
+      "GITLAB_BASE_URL",
+      "global",
+      workspaceId ?? undefined,
+    ).catch(() => null);
+    if (gitlabBaseUrl) {
+      try {
+        const gitlabHost = new URL(normalizeUrlWithScheme(gitlabBaseUrl)).host.toLowerCase();
+        if (parsedUrl.host.toLowerCase() === gitlabHost) gitPlatform = "gitlab";
+      } catch {
+        /* ignore malformed optional config */
+      }
+    }
+  }
+  return gitPlatform;
+}
+
 export async function getRepoByUrl(
   repoUrl: string,
   workspaceId?: string | null,
@@ -154,14 +180,14 @@ export async function createRepo(data: {
   fullName: string;
   defaultBranch?: string;
   isPrivate?: boolean;
+  customDockerImageUrl?: string | null;
   workspaceId?: string | null;
 }): Promise<RepoRecord> {
   // Ensure repos always have a workspace assigned — prevents NULL workspace_id
   // rows which bypass the (repo_url, workspace_id) unique constraint
   const workspaceId = data.workspaceId || (await getDefaultWorkspaceId()) || undefined;
 
-  const parsedUrl = parseRepoUrl(data.repoUrl);
-  const gitPlatform = parsedUrl?.platform ?? "github";
+  const gitPlatform = await detectGitPlatform(data.repoUrl, workspaceId);
 
   const [repo] = await db
     .insert(repos)
@@ -171,6 +197,7 @@ export async function createRepo(data: {
       fullName: data.fullName,
       defaultBranch: data.defaultBranch ?? "main",
       isPrivate: data.isPrivate ?? false,
+      customDockerImageUrl: data.customDockerImageUrl ?? null,
       workspaceId,
     })
     .onConflictDoUpdate({
@@ -179,6 +206,7 @@ export async function createRepo(data: {
         fullName: data.fullName,
         defaultBranch: data.defaultBranch ?? "main",
         isPrivate: data.isPrivate ?? false,
+        customDockerImageUrl: data.customDockerImageUrl ?? null,
         updatedAt: new Date(),
       },
     })
@@ -190,6 +218,7 @@ export async function updateRepo(
   id: string,
   data: {
     imagePreset?: string;
+    customDockerImageUrl?: string | null;
     extraPackages?: string;
     setupCommands?: string;
     customDockerfile?: string | null;

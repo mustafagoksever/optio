@@ -14,6 +14,7 @@ const mockGetTaskLogs = vi.fn();
 const mockGetAllTaskLogs = vi.fn();
 const mockGetTaskEvents = vi.fn();
 const mockGetTaskStats = vi.fn();
+const mockGetRepoByUrl = vi.fn();
 
 vi.mock("../services/task-service.js", () => ({
   listTasks: (...args: unknown[]) => mockListTasks(...args),
@@ -27,6 +28,10 @@ vi.mock("../services/task-service.js", () => ({
   getTaskEvents: (...args: unknown[]) => mockGetTaskEvents(...args),
   getTaskStats: (...args: unknown[]) => mockGetTaskStats(...args),
   hydratePrReviewPrUrls: async (rows: unknown[]) => rows,
+}));
+
+vi.mock("../services/repo-service.js", () => ({
+  getRepoByUrl: (...args: unknown[]) => mockGetRepoByUrl(...args),
 }));
 
 const mockAddDependencies = vi.fn();
@@ -169,6 +174,11 @@ describe("GET /api/tasks", () => {
 
   beforeEach(async () => {
     vi.clearAllMocks();
+    mockGetRepoByUrl.mockResolvedValue({
+      repoUrl: "https://github.com/org/repo",
+      workspaceId: "ws-1",
+      customDockerImageUrl: "registry.internal/optio/claude-sandbox:main",
+    });
     app = await buildTestApp();
   });
 
@@ -271,6 +281,11 @@ describe("POST /api/tasks", () => {
 
   beforeEach(async () => {
     vi.clearAllMocks();
+    mockGetRepoByUrl.mockResolvedValue({
+      repoUrl: "https://github.com/org/repo",
+      workspaceId: "ws-1",
+      customDockerImageUrl: "registry.internal/optio/claude-sandbox:main",
+    });
     app = await buildTestApp();
   });
 
@@ -333,6 +348,30 @@ describe("POST /api/tasks", () => {
       "user-1",
     );
     // Should NOT enqueue when dependencies exist
+    expect(mockQueueAdd).not.toHaveBeenCalled();
+  });
+
+  it("rejects repo tasks when the selected repo has no custom sandbox image", async () => {
+    mockGetRepoByUrl.mockResolvedValue({
+      repoUrl: "https://github.com/org/repo",
+      workspaceId: "ws-1",
+      customDockerImageUrl: null,
+    });
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/tasks",
+      payload: {
+        title: "Fix bug",
+        prompt: "Fix the bug",
+        repoUrl: "https://github.com/org/repo",
+        agentType: "claude-code",
+      },
+    });
+
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error).toContain("customDockerImageUrl");
+    expect(mockCreateTask).not.toHaveBeenCalled();
     expect(mockQueueAdd).not.toHaveBeenCalled();
   });
 

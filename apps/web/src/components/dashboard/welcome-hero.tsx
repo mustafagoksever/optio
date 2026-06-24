@@ -12,6 +12,7 @@ import {
   Bot,
   Container,
 } from "lucide-react";
+import { JiraIssueRunCard } from "./jira-issue-run-card";
 
 function QuickLink({
   icon: Icon,
@@ -162,6 +163,12 @@ export function WelcomeHero({ repoCount }: { repoCount: number }) {
           ))}
         </div>
       </div>
+
+      {hasRepos && (
+        <div className="mb-8">
+          <JiraIssueRunCard />
+        </div>
+      )}
 
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
         <QuickLink icon={ListTodo} label="Tasks" description="View all tasks" href="/tasks" />

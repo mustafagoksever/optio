@@ -8,6 +8,7 @@ import {
 } from "@optio/shared";
 import { getRedisClient } from "./event-bus.js";
 import { retrieveSecret } from "./secret-service.js";
+import { intranetFetch } from "./intranet-fetch.js";
 
 /** Cache TTL for live-probed model lists. ~1h matches the task spec. */
 const CACHE_TTL_SECONDS = 60 * 60;
@@ -19,24 +20,31 @@ const CACHE_KEY_PREFIX = "optio:agent-options";
  * Credential used for an upstream list-models probe. `api-key` is sent in the
  * provider's native key header; `oauth` is sent as a Bearer token (Anthropic
  * OAuth tokens from `claude setup-token` additionally need the oauth beta
- * header).
+ * header). `gateway-token` is the intranet Anthropic-compatible gateway mode
+ * and uses Bearer auth against a configured base URL.
  */
 interface ProbeCredential {
   value: string;
-  kind: "api-key" | "oauth";
+  kind: "api-key" | "oauth" | "gateway-token";
+  baseUrl?: string;
 }
 
-type LiveProbe = (credential: ProbeCredential) => Promise<LiveModel[]>;
+type LiveProbe = (credential: ProbeCredential, workspaceId?: string | null) => Promise<LiveModel[]>;
 
 /** Safety bound on list-models pagination — well above any real model count. */
 const MAX_PROBE_PAGES = 10;
 
 /** Anthropic: GET /v1/models → data[].{id,display_name}, paginated via after_id. */
-async function probeAnthropic(credential: ProbeCredential): Promise<LiveModel[]> {
+async function probeAnthropic(
+  credential: ProbeCredential,
+  workspaceId?: string | null,
+): Promise<LiveModel[]> {
   const headers: Record<string, string> = { "anthropic-version": "2023-06-01" };
   if (credential.kind === "oauth") {
     headers.Authorization = `Bearer ${credential.value}`;
     headers["anthropic-beta"] = "oauth-2025-04-20";
+  } else if (credential.kind === "gateway-token") {
+    headers.Authorization = `Bearer ${credential.value}`;
   } else {
     headers["x-api-key"] = credential.value;
   }
@@ -44,18 +52,20 @@ async function probeAnthropic(credential: ProbeCredential): Promise<LiveModel[]>
   const models: LiveModel[] = [];
   let afterId: string | undefined;
   for (let page = 0; page < MAX_PROBE_PAGES; page++) {
-    const url = new URL("https://api.anthropic.com/v1/models");
+    const url = new URL(
+      `${normalizeBaseUrl(credential.baseUrl ?? "https://api.anthropic.com")}/v1/models`,
+    );
     url.searchParams.set("limit", "100");
     if (afterId) url.searchParams.set("after_id", afterId);
-    const res = await fetch(url, { headers });
+    const res = await intranetFetch(url, { headers }, workspaceId);
     if (!res.ok) throw new Error(`Anthropic /v1/models returned ${res.status}`);
     const body = (await res.json()) as {
-      data?: Array<{ id?: string; display_name?: string }>;
+      data?: Array<{ id?: string; display_name?: string; displayName?: string }>;
       has_more?: boolean;
       last_id?: string;
     };
     for (const m of body.data ?? []) {
-      if (m.id) models.push({ id: m.id, displayName: m.display_name });
+      if (m.id) models.push({ id: m.id, displayName: m.display_name ?? m.displayName });
     }
     if (!body.has_more || !body.last_id) break;
     afterId = body.last_id;
@@ -93,7 +103,12 @@ interface ProbeConfig {
   /** Redis cache key suffix (distinguishes providers sharing a DB column). */
   probeKey: AgentProviderId;
   /** Ordered credential sources for the upstream probe — first one found wins. */
-  secretCandidates: Array<{ name: string; kind: ProbeCredential["kind"] }>;
+  secretCandidates: Array<{
+    name: string;
+    kind: ProbeCredential["kind"];
+    baseUrlName?: string;
+    defaultBaseUrl?: string;
+  }>;
   /** Probe function that returns a list of upstream models. */
   probe: LiveProbe;
 }
@@ -102,8 +117,14 @@ const PROBE_CONFIG: Partial<Record<AgentProviderId, ProbeConfig>> = {
   anthropic: {
     probeKey: "anthropic",
     // OAuth-token deployments (the recommended k8s mode) have no API key, so
-    // fall back to the Claude Code OAuth token for the probe.
+    // fall back to the Claude Code OAuth token for the probe. Intranet
+    // deployments can additionally use an Anthropic-compatible gateway.
     secretCandidates: [
+      {
+        name: "ANTHROPIC_AUTH_TOKEN",
+        kind: "gateway-token",
+        baseUrlName: "ANTHROPIC_BASE_URL",
+      },
       { name: "ANTHROPIC_API_KEY", kind: "api-key" },
       { name: "CLAUDE_CODE_OAUTH_TOKEN", kind: "oauth" },
     ],
@@ -128,6 +149,25 @@ const PROBE_CONFIG: Partial<Record<AgentProviderId, ProbeConfig>> = {
  */
 function hashKey(key: string): string {
   return createHash("sha256").update(key).digest("hex").slice(0, 16);
+}
+
+function normalizeBaseUrl(value: string): string {
+  const withScheme = /^https?:\/\//i.test(value) ? value : `https://${value}`;
+  const url = new URL(withScheme);
+  url.hash = "";
+  url.search = "";
+  return url.toString().replace(/\/+$/, "");
+}
+
+async function retrieveOptionalSecret(
+  name: string,
+  workspaceId?: string | null,
+): Promise<string | null> {
+  try {
+    return await retrieveSecret(name, "global", workspaceId ?? undefined);
+  } catch {
+    return null;
+  }
 }
 
 function buildCacheKey(provider: AgentProviderId, keyHash: string): string {
@@ -239,9 +279,15 @@ export async function getProviderOptions(
   let credential: ProbeCredential | null = null;
   for (const candidate of probeConfig.secretCandidates) {
     try {
-      const value = await retrieveSecret(candidate.name, "global", opts.workspaceId ?? undefined);
+      const value = await retrieveOptionalSecret(candidate.name, opts.workspaceId);
+      let baseUrl = candidate.defaultBaseUrl;
+      if (candidate.baseUrlName) {
+        baseUrl =
+          (await retrieveOptionalSecret(candidate.baseUrlName, opts.workspaceId)) ?? undefined;
+      }
       if (value) {
-        credential = { value, kind: candidate.kind };
+        if (candidate.baseUrlName && !baseUrl) continue;
+        credential = { value, kind: candidate.kind, baseUrl };
         break;
       }
     } catch {
@@ -258,7 +304,7 @@ export async function getProviderOptions(
     };
   }
 
-  const keyHash = hashKey(credential.value);
+  const keyHash = hashKey(`${credential.baseUrl ?? ""}|${credential.value}`);
 
   if (!opts.forceRefresh) {
     const cached = await readLiveModelsFromCache(provider, keyHash);
@@ -273,7 +319,7 @@ export async function getProviderOptions(
   }
 
   try {
-    const models = await probeConfig.probe(credential);
+    const models = await probeConfig.probe(credential, opts.workspaceId);
     const refreshedAt = await writeLiveModelsToCache(provider, keyHash, models);
     return {
       catalog: mergeLiveModels(baseline, models),

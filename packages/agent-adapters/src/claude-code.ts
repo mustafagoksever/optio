@@ -51,6 +51,8 @@ export class ClaudeCodeAdapter implements AgentAdapter {
 
     if (authMode === "api-key") {
       requiredSecrets.push("ANTHROPIC_API_KEY");
+    } else if (authMode === "gateway-token") {
+      requiredSecrets.push("ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL");
     } else if (authMode === "max-subscription") {
       // Max subscription: use CLAUDE_CODE_OAUTH_TOKEN env var
       // The token is fetched from the Optio auth proxy at task execution time

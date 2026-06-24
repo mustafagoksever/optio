@@ -9,9 +9,10 @@ import {
   repoPods,
 } from "../db/schema.js";
 import { publishEvent, publishSessionEvent } from "./event-bus.js";
-import { InteractiveSessionState, normalizeRepoUrl, type PresetImageId } from "@optio/shared";
+import { InteractiveSessionState, normalizeRepoUrl } from "@optio/shared";
 import { getOrCreateRepoPod } from "./repo-pool-service.js";
 import { logger } from "../logger.js";
+import { buildRepoImageConfig } from "./repo-image-config.js";
 
 export async function createSession(input: {
   repoUrl: string;
@@ -50,9 +51,7 @@ export async function createSession(input: {
     // No token, that's fine
   }
 
-  const imageConfig = repoConfig
-    ? { preset: (repoConfig.imagePreset ?? "base") as PresetImageId }
-    : undefined;
+  const imageConfig = buildRepoImageConfig(repoConfig);
   const pod = await getOrCreateRepoPod(repoUrl, repoBranch, env, imageConfig, {
     maxAgentsPerPod: repoConfig?.maxAgentsPerPod ?? 2,
     maxPodInstances: repoConfig?.maxPodInstances ?? 1,

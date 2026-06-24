@@ -7,17 +7,20 @@ import { isSubscriptionAvailable } from "../services/auth-service.js";
 import { isGitHubAppConfigured, getInstallationToken } from "../services/github-app-service.js";
 import { isAuthDisabled } from "../services/oauth/index.js";
 import { ErrorResponseSchema } from "../schemas/common.js";
+import { intranetFetch } from "../services/intranet-fetch.js";
 
 const tokenSchema = z.object({ token: z.string().min(1) }).describe("Body with a required token");
 const gitlabTokenSchema = z
   .object({
     token: z.string().min(1),
-    host: z
+    baseUrl: z
       .string()
+      .min(1)
       .optional()
-      .describe("Optional self-hosted GitLab host; defaults to gitlab.com"),
+      .describe("Self-hosted GitLab base URL, e.g. https://gitlab.internal"),
+    host: z.string().optional().describe("Legacy self-hosted GitLab host; defaults to gitlab.com"),
   })
-  .describe("GitLab token + optional host");
+  .describe("GitLab token + optional base URL");
 const awsCredentialsSchema = z
   .object({
     accessKeyId: z.string().min(1),
@@ -27,6 +30,15 @@ const awsCredentialsSchema = z
   })
   .describe("AWS credentials + region for CodeCommit access");
 const keySchema = z.object({ key: z.string().min(1) }).describe("Body with a required API key");
+const anthropicKeySchema = keySchema
+  .extend({ baseUrl: z.string().min(1).optional() })
+  .describe("Anthropic API key plus optional base URL");
+const baseUrlTokenSchema = z
+  .object({
+    baseUrl: z.string().min(1),
+    token: z.string().min(1),
+  })
+  .describe("Base URL plus bearer token");
 const reposBodySchema = z
   .object({
     token: z
@@ -90,6 +102,23 @@ function sanitizeError(err: unknown): string {
   return "An unexpected error occurred";
 }
 
+function normalizeBaseUrl(value: string): string {
+  const withScheme = /^https?:\/\//i.test(value) ? value : `https://${value}`;
+  const url = new URL(withScheme);
+  url.hash = "";
+  url.search = "";
+  return url.toString().replace(/\/+$/, "");
+}
+
+function joinApiPath(baseUrl: string, path: string): string {
+  return `${normalizeBaseUrl(baseUrl)}${path.startsWith("/") ? path : `/${path}`}`;
+}
+
+function gitlabBaseUrl(input: { baseUrl?: string; host?: string }): string {
+  if (input.baseUrl) return normalizeBaseUrl(input.baseUrl);
+  return normalizeBaseUrl(input.host ?? "gitlab.com");
+}
+
 export async function setupRoutes(rawApp: FastifyInstance) {
   const app = rawApp.withTypeProvider<ZodTypeProvider>();
 
@@ -119,6 +148,8 @@ export async function setupRoutes(rawApp: FastifyInstance) {
       // see #319) requires the caller's workspaceId. Inferring mode from the
       // set of stored secret names avoids that read-after-write asymmetry.
       const hasAnthropicKey = secretNames.includes("ANTHROPIC_API_KEY");
+      const hasClaudeGateway =
+        secretNames.includes("ANTHROPIC_BASE_URL") && secretNames.includes("ANTHROPIC_AUTH_TOKEN");
       const hasOpenAIKey = secretNames.includes("OPENAI_API_KEY");
       const hasGitToken =
         secretNames.includes("GITHUB_TOKEN") ||
@@ -145,6 +176,7 @@ export async function setupRoutes(rawApp: FastifyInstance) {
 
       const hasAnyAgentKey =
         hasAnthropicKey ||
+        hasClaudeGateway ||
         hasOpenAIKey ||
         usingSubscription ||
         hasOauthToken ||
@@ -172,7 +204,12 @@ export async function setupRoutes(rawApp: FastifyInstance) {
           runtime: { done: runtimeHealthy, label: "Container runtime" },
           gitToken: { done: hasGitToken, label: "Git provider token" },
           anthropicKey: {
-            done: hasAnthropicKey || usingSubscription || hasOauthToken || hasClaudeVertexAi,
+            done:
+              hasAnthropicKey ||
+              hasClaudeGateway ||
+              usingSubscription ||
+              hasOauthToken ||
+              hasClaudeVertexAi,
             label: "Claude credentials",
           },
           openaiKey: { done: hasOpenAIKey, label: "OpenAI API key" },
@@ -240,12 +277,16 @@ export async function setupRoutes(rawApp: FastifyInstance) {
       },
     },
     async (req, reply) => {
-      const { token, host } = req.body;
-      const gitlabHost = host ?? "gitlab.com";
+      const { token } = req.body;
+      const baseUrl = gitlabBaseUrl(req.body);
       try {
-        const res = await fetch(`https://${gitlabHost}/api/v4/user`, {
-          headers: { "PRIVATE-TOKEN": token, "User-Agent": "Optio" },
-        });
+        const res = await intranetFetch(
+          joinApiPath(baseUrl, "/api/v4/user"),
+          {
+            headers: { "PRIVATE-TOKEN": token, "User-Agent": "Optio" },
+          },
+          req.user?.workspaceId ?? null,
+        );
         if (!res.ok) {
           return reply.send({ valid: false, error: `GitLab returned ${res.status}` });
         }
@@ -375,20 +416,24 @@ export async function setupRoutes(rawApp: FastifyInstance) {
         summary: "Validate an Anthropic API key",
         description: "Probe Anthropic's /v1/models endpoint with the provided key.",
         tags: ["Setup & Settings"],
-        body: keySchema,
+        body: anthropicKeySchema,
         response: { 200: ValidationResultSchema, 400: ErrorResponseSchema },
       },
     },
     async (req, reply) => {
-      const { key } = req.body;
+      const { key, baseUrl } = req.body;
 
       try {
-        const res = await fetch("https://api.anthropic.com/v1/models", {
-          headers: {
-            "x-api-key": key,
-            "anthropic-version": "2023-06-01",
+        const res = await intranetFetch(
+          joinApiPath(baseUrl ?? "https://api.anthropic.com", "/v1/models"),
+          {
+            headers: {
+              "x-api-key": key,
+              "anthropic-version": "2023-06-01",
+            },
           },
-        });
+          req.user?.workspaceId ?? null,
+        );
         if (res.ok) {
           reply.send({ valid: true });
         } else {
@@ -398,6 +443,104 @@ export async function setupRoutes(rawApp: FastifyInstance) {
       } catch (err) {
         app.log.error(err, "Anthropic key validation failed");
         reply.send({ valid: false, error: sanitizeError(err) });
+      }
+    },
+  );
+
+  app.post(
+    "/api/setup/validate/claude-gateway",
+    {
+      config: { rateLimit: SETUP_POST_RATE_LIMIT },
+      preHandler: [requireAdminWhenAuthenticated],
+      schema: {
+        operationId: "validateClaudeGateway",
+        summary: "Validate a Claude-compatible gateway token",
+        description:
+          "Probe the configured Anthropic-compatible gateway's /v1/models endpoint " +
+          "using Bearer auth.",
+        tags: ["Setup & Settings"],
+        body: baseUrlTokenSchema,
+        response: { 200: ValidationResultSchema, 400: ErrorResponseSchema },
+      },
+    },
+    async (req, reply) => {
+      const { baseUrl, token } = req.body;
+
+      try {
+        const res = await intranetFetch(
+          joinApiPath(baseUrl, "/v1/models"),
+          {
+            headers: {
+              Authorization: `Bearer ${token}`,
+              "anthropic-version": "2023-06-01",
+            },
+          },
+          req.user?.workspaceId ?? null,
+        );
+        if (res.ok) {
+          reply.send({ valid: true });
+        } else {
+          const body = (await res.json().catch(() => ({}))) as { error?: { message?: string } };
+          reply.send({ valid: false, error: body.error?.message ?? `API returned ${res.status}` });
+        }
+      } catch (err) {
+        app.log.error(err, "Claude gateway validation failed");
+        reply.send({ valid: false, error: sanitizeError(err) });
+      }
+    },
+  );
+
+  app.post(
+    "/api/setup/validate/jira-pat",
+    {
+      config: { rateLimit: SETUP_POST_RATE_LIMIT },
+      preHandler: [requireAdminWhenAuthenticated],
+      schema: {
+        operationId: "validateJiraPat",
+        summary: "Validate a Jira PAT",
+        description:
+          "Probe Jira's /rest/api/2/myself endpoint with a Bearer PAT, falling back to v3.",
+        tags: ["Setup & Settings"],
+        body: baseUrlTokenSchema,
+        response: { 200: ValidationResultSchema, 400: ErrorResponseSchema },
+      },
+    },
+    async (req, reply) => {
+      const { baseUrl, token } = req.body;
+      const headers = {
+        Authorization: `Bearer ${token}`,
+        Accept: "application/json",
+        "User-Agent": "Optio",
+      };
+
+      try {
+        for (const path of ["/rest/api/2/myself", "/rest/api/3/myself"]) {
+          const res = await intranetFetch(
+            joinApiPath(baseUrl, path),
+            { headers },
+            req.user?.workspaceId ?? null,
+          );
+          if (res.ok) {
+            const user = (await res.json().catch(() => ({}))) as {
+              name?: string;
+              displayName?: string;
+              emailAddress?: string;
+            };
+            return reply.send({
+              valid: true,
+              user: {
+                login: user.name ?? user.emailAddress ?? "jira",
+                name: user.displayName ?? user.name ?? user.emailAddress ?? "Jira user",
+              },
+            });
+          }
+          if (path.endsWith("/3/myself")) {
+            return reply.send({ valid: false, error: `Jira returned ${res.status}` });
+          }
+        }
+      } catch (err) {
+        app.log.error(err, "Jira PAT validation failed");
+        return reply.send({ valid: false, error: sanitizeError(err) });
       }
     },
   );
@@ -604,18 +747,10 @@ export async function setupRoutes(rawApp: FastifyInstance) {
       },
     },
     async (req, reply) => {
-      const { token, host } = req.body;
-      const gitlabHost = host ?? "gitlab.com";
+      const { token } = req.body;
+      const baseUrl = gitlabBaseUrl(req.body);
       try {
-        const res = await fetch(
-          `https://${gitlabHost}/api/v4/projects?membership=true&order_by=last_activity_at&sort=desc&per_page=20`,
-          { headers: { "PRIVATE-TOKEN": token, "User-Agent": "Optio" } },
-        );
-        if (!res.ok) {
-          return reply.send({ repos: [], error: `GitLab returned ${res.status}` });
-        }
-
-        const data = (await res.json()) as Array<{
+        type GitLabProject = {
           path_with_namespace: string;
           web_url: string;
           http_url_to_repo: string;
@@ -623,7 +758,32 @@ export async function setupRoutes(rawApp: FastifyInstance) {
           visibility: string;
           description: string | null;
           last_activity_at: string;
-        }>;
+        };
+        const data: GitLabProject[] = [];
+        let page = 1;
+        for (;;) {
+          const url = new URL(joinApiPath(baseUrl, "/api/v4/projects"));
+          url.searchParams.set("membership", "true");
+          url.searchParams.set("order_by", "last_activity_at");
+          url.searchParams.set("sort", "desc");
+          url.searchParams.set("per_page", "100");
+          url.searchParams.set("page", String(page));
+          const res = await intranetFetch(
+            url,
+            {
+              headers: { "PRIVATE-TOKEN": token, "User-Agent": "Optio" },
+            },
+            req.user?.workspaceId ?? null,
+          );
+          if (!res.ok) {
+            return reply.send({ repos: [], error: `GitLab returned ${res.status}` });
+          }
+          data.push(...((await res.json()) as GitLabProject[]));
+          const nextPage = res.headers.get("x-next-page");
+          if (!nextPage) break;
+          page = Number(nextPage);
+          if (!Number.isFinite(page) || page < 1) break;
+        }
 
         const repos = data.map((r) => ({
           fullName: r.path_with_namespace,

@@ -41,6 +41,7 @@ const mockRepoData = {
   repoUrl: "https://github.com/org/repo",
   fullName: "org/repo",
   workspaceId: "ws-1",
+  customDockerImageUrl: null,
   cpuRequest: null,
   cpuLimit: null,
   memoryRequest: null,
@@ -118,6 +119,7 @@ describe("POST /api/repos", () => {
       payload: {
         repoUrl: "https://github.com/org/repo",
         fullName: "org/repo",
+        customDockerImageUrl: "registry.internal/optio/claude-sandbox:main",
       },
     });
 
@@ -126,6 +128,7 @@ describe("POST /api/repos", () => {
       expect.objectContaining({
         repoUrl: "https://github.com/org/repo",
         fullName: "org/repo",
+        customDockerImageUrl: "registry.internal/optio/claude-sandbox:main",
         workspaceId: "ws-1",
       }),
     );
@@ -180,6 +183,28 @@ describe("PATCH /api/repos/:id", () => {
     expect(mockUpdateRepo).toHaveBeenCalledWith(
       "repo-1",
       expect.objectContaining({ imagePreset: "node" }),
+    );
+  });
+
+  it("updates the required custom sandbox image URL", async () => {
+    mockGetRepo.mockResolvedValue(mockRepoData);
+    mockUpdateRepo.mockResolvedValue({
+      ...mockRepoData,
+      customDockerImageUrl: "registry.internal/optio/claude-sandbox:main",
+    });
+
+    const res = await app.inject({
+      method: "PATCH",
+      url: "/api/repos/repo-1",
+      payload: { customDockerImageUrl: "registry.internal/optio/claude-sandbox:main" },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(mockUpdateRepo).toHaveBeenCalledWith(
+      "repo-1",
+      expect.objectContaining({
+        customDockerImageUrl: "registry.internal/optio/claude-sandbox:main",
+      }),
     );
   });
 

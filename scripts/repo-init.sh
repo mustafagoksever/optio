@@ -8,6 +8,19 @@ echo "[optio] Repo: ${OPTIO_REPO_URL} (branch: ${OPTIO_REPO_BRANCH})"
 git config --global user.name "${GIT_BOT_NAME:-${GITHUB_APP_BOT_NAME:-Optio Agent}}"
 git config --global user.email "${GIT_BOT_EMAIL:-${GITHUB_APP_BOT_EMAIL:-optio-agent@noreply.github.com}}"
 
+# Trust the company CA, when provided by setup. The certificate itself is not a
+# secret, but it is injected at runtime so intranet images do not need rebuilding
+# for every CA rotation.
+if [ -n "${OPTIO_COMPANY_CA_PEM:-}" ]; then
+  OPTIO_COMPANY_CA_PATH="${OPTIO_COMPANY_CA_PATH:-/home/agent/.optio-company-ca.pem}"
+  printf '%s\n' "${OPTIO_COMPANY_CA_PEM}" > "${OPTIO_COMPANY_CA_PATH}"
+  chmod 644 "${OPTIO_COMPANY_CA_PATH}"
+  export NODE_EXTRA_CA_CERTS="${OPTIO_COMPANY_CA_PATH}"
+  export GIT_SSL_CAINFO="${OPTIO_COMPANY_CA_PATH}"
+  git config --global http.sslCAInfo "${OPTIO_COMPANY_CA_PATH}" || true
+  echo "[optio] Company CA configured (${OPTIO_COMPANY_CA_PATH})"
+fi
+
 # Detect git platform from repo URL
 OPTIO_GIT_HOST=""
 case "${OPTIO_REPO_URL}" in

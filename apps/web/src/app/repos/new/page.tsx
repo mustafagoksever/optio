@@ -50,6 +50,7 @@ export default function NewRepoPage() {
 
   // Step 2: Image
   const [imagePreset, setImagePreset] = useState("base");
+  const [customDockerImageUrl, setCustomDockerImageUrl] = useState("");
   const [extraPackages, setExtraPackages] = useState("");
   const [setupCommands, setSetupCommands] = useState("");
   const [showAdvanced, setShowAdvanced] = useState(false);
@@ -119,6 +120,7 @@ export default function NewRepoPage() {
         fullName,
         defaultBranch,
         isPrivate,
+        customDockerImageUrl: customDockerImageUrl.trim(),
       });
       const repoId = res.repo.id;
 
@@ -156,6 +158,7 @@ export default function NewRepoPage() {
       case "repo":
         return validated;
       case "image":
+        return customDockerImageUrl.trim().length > 0;
       case "agent":
       case "review":
         return true;
@@ -236,6 +239,8 @@ export default function NewRepoPage() {
           <ImageStep
             imagePreset={imagePreset}
             setImagePreset={setImagePreset}
+            customDockerImageUrl={customDockerImageUrl}
+            setCustomDockerImageUrl={setCustomDockerImageUrl}
             extraPackages={extraPackages}
             setExtraPackages={setExtraPackages}
             setupCommands={setupCommands}
@@ -419,6 +424,8 @@ function RepoStep({
 function ImageStep({
   imagePreset,
   setImagePreset,
+  customDockerImageUrl,
+  setCustomDockerImageUrl,
   extraPackages,
   setExtraPackages,
   setupCommands,
@@ -430,6 +437,8 @@ function ImageStep({
 }: {
   imagePreset: string;
   setImagePreset: (v: string) => void;
+  customDockerImageUrl: string;
+  setCustomDockerImageUrl: (v: string) => void;
   extraPackages: string;
   setExtraPackages: (v: string) => void;
   setupCommands: string;
@@ -444,9 +453,19 @@ function ImageStep({
       <div>
         <h2 className="text-sm font-medium mb-1">Container Image</h2>
         <p className="text-xs text-text-muted">
-          Choose the base image for agent pods working on this repo.
+          Set the custom sandbox image for agent pods working on this repo.
           {detected && " Auto-detected from repository contents."}
         </p>
+      </div>
+
+      <div>
+        <label className="block text-xs text-text-muted mb-1">Custom sandbox image URL</label>
+        <input
+          value={customDockerImageUrl}
+          onChange={(e) => setCustomDockerImageUrl(e.target.value)}
+          placeholder="registry.internal/optio/claude-sandbox:main"
+          className={inputClass}
+        />
       </div>
 
       <div className="grid gap-1.5">

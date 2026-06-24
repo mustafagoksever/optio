@@ -33,6 +33,7 @@ vi.mock("./secret-service.js", () => ({
     const str = blob.ciphertext.toString();
     return str.startsWith("enc:") ? str.slice(4) : str;
   }),
+  retrieveSecret: vi.fn().mockRejectedValue(new Error("not found")),
 }));
 
 import { db } from "../db/client.js";

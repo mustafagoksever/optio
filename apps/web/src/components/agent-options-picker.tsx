@@ -150,8 +150,16 @@ export function AgentOptionsPicker({
                 value={modelValue}
                 onChange={(e) => setField(catalog.modelField, e.target.value)}
                 placeholder={catalog.modelPlaceholder ?? ""}
+                list={`${provider}-model-options`}
                 className={inputClass}
               />
+              <datalist id={`${provider}-model-options`}>
+                {catalog.models.map((m) => (
+                  <option key={m.id} value={m.id}>
+                    {m.label}
+                  </option>
+                ))}
+              </datalist>
               {catalog.modelHelpText && (
                 <p className="text-xs text-text-muted mt-1">{catalog.modelHelpText}</p>
               )}

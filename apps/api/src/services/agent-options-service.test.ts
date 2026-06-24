@@ -43,6 +43,14 @@ describe("getProviderOptions", () => {
     globalThis.fetch = originalFetch;
   });
 
+  function mockAnthropicApiKey(value = "sk-ant-xxx") {
+    mockRetrieveSecret.mockImplementation((name: unknown) =>
+      name === "ANTHROPIC_API_KEY"
+        ? Promise.resolve(value)
+        : Promise.reject(new Error("Secret not found")),
+    );
+  }
+
   it("returns the baseline when the provider doesn't support live refresh", async () => {
     const result = await getProviderOptions("copilot");
     expect(result.source).toBe("baseline");
@@ -55,8 +63,64 @@ describe("getProviderOptions", () => {
     mockRetrieveSecret.mockRejectedValue(new Error("Secret not found"));
     const result = await getProviderOptions("anthropic");
     expect(result.source).toBe("baseline");
+    expect(mockRetrieveSecret).toHaveBeenCalledWith("ANTHROPIC_AUTH_TOKEN", "global", undefined);
     expect(mockRetrieveSecret).toHaveBeenCalledWith("ANTHROPIC_API_KEY", "global", undefined);
     expect(mockRetrieveSecret).toHaveBeenCalledWith("CLAUDE_CODE_OAUTH_TOKEN", "global", undefined);
+  });
+
+  it("uses the stored Anthropic-compatible base URL and bearer auth token", async () => {
+    mockRetrieveSecret.mockImplementation((name: unknown) => {
+      if (name === "ANTHROPIC_AUTH_TOKEN") return Promise.resolve("gateway-token");
+      if (name === "ANTHROPIC_BASE_URL") return Promise.resolve("https://claude-gateway.internal/");
+      return Promise.reject(new Error("Secret not found"));
+    });
+    const fetchSpy = vi.fn().mockResolvedValue({
+      ok: true,
+      json: () =>
+        Promise.resolve({
+          data: [{ id: "local-claude", display_name: "Local Claude" }],
+        }),
+    });
+    globalThis.fetch = fetchSpy as unknown as typeof fetch;
+
+    const result = await getProviderOptions("anthropic");
+
+    expect(result.source).toBe("live");
+    const firstUrl = new URL(String(fetchSpy.mock.calls[0][0]));
+    expect(`${firstUrl.origin}${firstUrl.pathname}`).toBe(
+      "https://claude-gateway.internal/v1/models",
+    );
+    const headers = fetchSpy.mock.calls[0][1].headers as Record<string, string>;
+    expect(headers.Authorization).toBe("Bearer gateway-token");
+    expect(headers["anthropic-version"]).toBe("2023-06-01");
+    expect(headers["anthropic-beta"]).toBeUndefined();
+    expect(headers["x-api-key"]).toBeUndefined();
+    const added = result.catalog.models.find((m) => m.id === "local-claude");
+    expect(added?.label).toBe("Local Claude");
+  });
+
+  it("prefers the configured gateway over a public Anthropic API key", async () => {
+    mockRetrieveSecret.mockImplementation((name: unknown) => {
+      if (name === "ANTHROPIC_AUTH_TOKEN") return Promise.resolve("gateway-token");
+      if (name === "ANTHROPIC_BASE_URL") return Promise.resolve("https://claude-gateway.internal");
+      if (name === "ANTHROPIC_API_KEY") return Promise.resolve("sk-ant-public");
+      return Promise.reject(new Error("Secret not found"));
+    });
+    const fetchSpy = vi.fn().mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve({ data: [{ id: "local-claude" }] }),
+    });
+    globalThis.fetch = fetchSpy as unknown as typeof fetch;
+
+    await getProviderOptions("anthropic");
+
+    const firstUrl = new URL(String(fetchSpy.mock.calls[0][0]));
+    expect(`${firstUrl.origin}${firstUrl.pathname}`).toBe(
+      "https://claude-gateway.internal/v1/models",
+    );
+    expect((fetchSpy.mock.calls[0][1].headers as Record<string, string>).Authorization).toBe(
+      "Bearer gateway-token",
+    );
   });
 
   it("falls back to the Claude OAuth token when no API key is configured", async () => {
@@ -81,7 +145,7 @@ describe("getProviderOptions", () => {
   });
 
   it("follows pagination on the anthropic models endpoint", async () => {
-    mockRetrieveSecret.mockResolvedValueOnce("sk-ant-xxx");
+    mockAnthropicApiKey();
     const fetchSpy = vi
       .fn()
       .mockResolvedValueOnce({
@@ -108,7 +172,7 @@ describe("getProviderOptions", () => {
   });
 
   it("uses upstream display names as labels for live models", async () => {
-    mockRetrieveSecret.mockResolvedValueOnce("sk-ant-xxx");
+    mockAnthropicApiKey();
     globalThis.fetch = vi.fn().mockResolvedValue({
       ok: true,
       json: () =>
@@ -124,7 +188,7 @@ describe("getProviderOptions", () => {
   });
 
   it("probes upstream and merges when no cache entry exists", async () => {
-    mockRetrieveSecret.mockResolvedValueOnce("sk-ant-xxx");
+    mockAnthropicApiKey();
     globalThis.fetch = vi.fn().mockResolvedValue({
       ok: true,
       json: () =>
@@ -141,7 +205,7 @@ describe("getProviderOptions", () => {
   });
 
   it("uses the cached list when present (skipping the probe)", async () => {
-    mockRetrieveSecret.mockResolvedValueOnce("sk-ant-xxx");
+    mockAnthropicApiKey();
     mockRedisGet.mockResolvedValueOnce(
       JSON.stringify({
         models: [{ id: "claude-from-cache", displayName: "From Cache" }],
@@ -161,7 +225,7 @@ describe("getProviderOptions", () => {
   });
 
   it("reads the legacy ids-only cache shape", async () => {
-    mockRetrieveSecret.mockResolvedValueOnce("sk-ant-xxx");
+    mockAnthropicApiKey();
     mockRedisGet.mockResolvedValueOnce(
       JSON.stringify({
         ids: ["claude-from-cache"],
@@ -178,7 +242,7 @@ describe("getProviderOptions", () => {
   });
 
   it("force-refresh bypasses the cache", async () => {
-    mockRetrieveSecret.mockResolvedValueOnce("sk-ant-xxx");
+    mockAnthropicApiKey();
     mockRedisGet.mockResolvedValueOnce(
       JSON.stringify({ ids: ["cached-id"], refreshedAt: 1700000000 }),
     );
@@ -197,7 +261,7 @@ describe("getProviderOptions", () => {
   });
 
   it("falls back to baseline when the upstream probe fails", async () => {
-    mockRetrieveSecret.mockResolvedValueOnce("sk-ant-xxx");
+    mockAnthropicApiKey();
     globalThis.fetch = vi.fn().mockResolvedValue({
       ok: false,
       status: 401,

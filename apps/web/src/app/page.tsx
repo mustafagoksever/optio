@@ -13,6 +13,7 @@ import {
   PodsList,
   WelcomeHero,
   AgentComparison,
+  JiraIssueRunCard,
 } from "@/components/dashboard";
 import { UpdateBanner } from "@/components/update-banner";
 
@@ -112,6 +113,8 @@ export default function OverviewPage() {
       </div>
 
       <UpdateBanner />
+
+      <JiraIssueRunCard />
 
       <div className="space-y-2">
         <div className="flex items-center gap-1.5 px-1">

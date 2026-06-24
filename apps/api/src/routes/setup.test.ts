@@ -83,6 +83,24 @@ describe("GET /api/setup/status", () => {
     expect(body.steps.anthropicKey.done).toBe(true);
   });
 
+  it("detects Claude gateway credentials as the Claude setup", async () => {
+    mockListSecrets.mockResolvedValue([
+      { name: "ANTHROPIC_BASE_URL" },
+      { name: "ANTHROPIC_AUTH_TOKEN" },
+      { name: "GITLAB_TOKEN" },
+    ]);
+    mockRetrieveSecret.mockRejectedValue(new Error("not found"));
+    mockCheckRuntimeHealth.mockResolvedValue(true);
+
+    const res = await app.inject({ method: "GET", url: "/api/setup/status" });
+
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.isSetUp).toBe(true);
+    expect(body.steps.anthropicKey.done).toBe(true);
+    expect(body.steps.anyAgentKey.done).toBe(true);
+  });
+
   it("returns not set up when no agent key exists", async () => {
     mockListSecrets.mockResolvedValue([{ name: "GITHUB_TOKEN" }]);
     mockRetrieveSecret.mockRejectedValue(new Error("not found"));
@@ -275,6 +293,92 @@ describe("POST /api/setup/validate/anthropic-key", () => {
   });
 });
 
+describe("POST /api/setup/validate/claude-gateway", () => {
+  let app: FastifyInstance;
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    app = await buildTestApp();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("validates with the configured Anthropic-compatible base URL and bearer token", async () => {
+    const fetchSpy = vi.fn().mockResolvedValue({ ok: true });
+    vi.stubGlobal("fetch", fetchSpy);
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/setup/validate/claude-gateway",
+      payload: {
+        baseUrl: "https://claude-gateway.internal/",
+        token: "gateway-token",
+      },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json().valid).toBe(true);
+    expect(fetchSpy).toHaveBeenCalledWith(
+      "https://claude-gateway.internal/v1/models",
+      expect.objectContaining({
+        headers: expect.objectContaining({
+          Authorization: "Bearer gateway-token",
+          "anthropic-version": "2023-06-01",
+        }),
+      }),
+    );
+  });
+});
+
+describe("POST /api/setup/validate/jira-pat", () => {
+  let app: FastifyInstance;
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    app = await buildTestApp();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("validates a Bearer PAT against Jira v2 and falls back to v3", async () => {
+    const fetchSpy = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: false, status: 401, json: async () => ({}) })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ name: "mustafa" }) });
+    vi.stubGlobal("fetch", fetchSpy);
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/setup/validate/jira-pat",
+      payload: {
+        baseUrl: "https://jira.internal",
+        token: "jira-pat",
+      },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json().valid).toBe(true);
+    expect(fetchSpy).toHaveBeenNthCalledWith(
+      1,
+      "https://jira.internal/rest/api/2/myself",
+      expect.objectContaining({
+        headers: expect.objectContaining({ Authorization: "Bearer jira-pat" }),
+      }),
+    );
+    expect(fetchSpy).toHaveBeenNthCalledWith(
+      2,
+      "https://jira.internal/rest/api/3/myself",
+      expect.objectContaining({
+        headers: expect.objectContaining({ Authorization: "Bearer jira-pat" }),
+      }),
+    );
+  });
+});
+
 describe("POST /api/setup/validate/openai-key", () => {
   let app: FastifyInstance;
 
@@ -413,6 +517,70 @@ describe("POST /api/setup/repos", () => {
     expect(res.statusCode).toBe(200);
     expect(res.json().repos).toHaveLength(1);
     expect(res.json().repos[0].fullName).toBe("org/repo");
+  });
+});
+
+describe("POST /api/setup/repos/gitlab", () => {
+  let app: FastifyInstance;
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    app = await buildTestApp();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("lists membership projects from the configured GitLab base URL with pagination", async () => {
+    const fetchSpy = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        headers: { get: (name: string) => (name.toLowerCase() === "x-next-page" ? "2" : null) },
+        json: async () => [
+          {
+            path_with_namespace: "org/repo-a",
+            web_url: "https://gitlab.internal/org/repo-a",
+            http_url_to_repo: "https://gitlab.internal/org/repo-a.git",
+            default_branch: "main",
+            visibility: "private",
+            description: "A",
+            last_activity_at: "2026-06-01T10:00:00Z",
+          },
+        ],
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        headers: { get: () => null },
+        json: async () => [
+          {
+            path_with_namespace: "org/repo-b",
+            web_url: "https://gitlab.internal/org/repo-b",
+            http_url_to_repo: "https://gitlab.internal/org/repo-b.git",
+            default_branch: "develop",
+            visibility: "internal",
+            description: null,
+            last_activity_at: "2026-06-02T10:00:00Z",
+          },
+        ],
+      });
+    vi.stubGlobal("fetch", fetchSpy);
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/setup/repos/gitlab",
+      payload: { baseUrl: "https://gitlab.internal", token: "gl-token" },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json().repos.map((repo: { fullName: string }) => repo.fullName)).toEqual([
+      "org/repo-a",
+      "org/repo-b",
+    ]);
+    expect(String(fetchSpy.mock.calls[0][0])).toContain("https://gitlab.internal/api/v4/projects");
+    expect(new URL(String(fetchSpy.mock.calls[0][0])).searchParams.get("page")).toBe("1");
+    expect(new URL(String(fetchSpy.mock.calls[1][0])).searchParams.get("page")).toBe("2");
   });
 });
 

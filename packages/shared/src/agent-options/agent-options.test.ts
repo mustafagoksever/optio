@@ -39,7 +39,7 @@ describe("PROVIDER_CATALOGS", () => {
   it("marks free-text providers with modelIsFreeText", () => {
     expect(OPENCODE_CATALOG.modelIsFreeText).toBe(true);
     expect(OPENCLAW_CATALOG.modelIsFreeText).toBe(true);
-    expect(ANTHROPIC_CATALOG.modelIsFreeText).toBeFalsy();
+    expect(ANTHROPIC_CATALOG.modelIsFreeText).toBe(true);
   });
 
   it("flags which providers support live refresh", () => {

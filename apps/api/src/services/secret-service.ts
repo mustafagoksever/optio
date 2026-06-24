@@ -38,8 +38,10 @@ const WEAK_KEY_VALUES = new Set([
 export const IDENTITY_SECRET_DENYLIST = new Set([
   "CLAUDE_CODE_OAUTH_TOKEN",
   "ANTHROPIC_API_KEY",
+  "ANTHROPIC_AUTH_TOKEN",
   "OPENAI_API_KEY",
   "GEMINI_API_KEY",
+  "JIRA_PAT",
 ]);
 
 function getEncryptionKey(): Buffer {

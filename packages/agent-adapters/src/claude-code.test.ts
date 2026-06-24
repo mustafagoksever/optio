@@ -74,6 +74,15 @@ describe("ClaudeCodeAdapter", () => {
       expect(config.requiredSecrets).toEqual(["ANTHROPIC_API_KEY"]);
     });
 
+    it("requires Claude gateway secrets in gateway-token mode", () => {
+      const config = adapter.buildContainerConfig({
+        ...baseInput,
+        claudeAuthMode: "gateway-token",
+      });
+      expect(config.requiredSecrets).toEqual(["ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL"]);
+      expect(config.requiredSecrets).not.toContain("ANTHROPIC_API_KEY");
+    });
+
     it("does not require ANTHROPIC_API_KEY in max-subscription mode", () => {
       const config = adapter.buildContainerConfig({
         ...baseInput,

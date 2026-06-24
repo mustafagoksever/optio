@@ -38,6 +38,7 @@ interface RepoEntry {
   fullName?: string;
   defaultBranch?: string;
   isPrivate?: boolean;
+  customDockerImageUrl?: string;
   validated: boolean;
 }
 
@@ -59,15 +60,15 @@ export default function SetupPage() {
   const [runtimeHealthy, setRuntimeHealthy] = useState<boolean | null>(null);
 
   // Step 2: Git provider
-  const [githubEnabled, setGithubEnabled] = useState(true);
-  const [gitlabEnabled, setGitlabEnabled] = useState(false);
+  const [githubEnabled, setGithubEnabled] = useState(false);
+  const [gitlabEnabled, setGitlabEnabled] = useState(true);
   const [githubToken, setGithubToken] = useState("");
   const [githubUser, setGithubUser] = useState<{ login: string; name: string } | null>(null);
   const [githubValidated, setGithubValidated] = useState(false);
   const [githubError, setGithubError] = useState("");
   const [githubAppConfigured, setGithubAppConfigured] = useState(false);
   const [gitlabToken, setGitlabToken] = useState("");
-  const [gitlabHost, setGitlabHost] = useState("gitlab.com");
+  const [gitlabBaseUrl, setGitlabBaseUrl] = useState("");
   const [gitlabUser, setGitlabUser] = useState<{ login: string; name: string } | null>(null);
   const [gitlabValidated, setGitlabValidated] = useState(false);
   const [gitlabError, setGitlabError] = useState("");
@@ -82,16 +83,19 @@ export default function SetupPage() {
 
   // Step 3: Agent keys
   const [anthropicKey, setAnthropicKey] = useState("");
+  const [claudeBaseUrl, setClaudeBaseUrl] = useState("");
+  const [claudeAuthToken, setClaudeAuthToken] = useState("");
   const [anthropicValidated, setAnthropicValidated] = useState(false);
   const [anthropicError, setAnthropicError] = useState("");
+  const [companyCaPem, setCompanyCaPem] = useState("");
   const [openaiKey, setOpenaiKey] = useState("");
   const [openaiValidated, setOpenaiValidated] = useState(false);
   const [openaiError, setOpenaiError] = useState("");
 
   // Step 3: Claude auth mode
-  const [claudeAuthMode, setClaudeAuthMode] = useState<"api-key" | "oauth-token" | "vertex-ai">(
-    "oauth-token",
-  );
+  const [claudeAuthMode, setClaudeAuthMode] = useState<
+    "gateway-token" | "api-key" | "oauth-token" | "vertex-ai"
+  >("gateway-token");
   const [oauthToken, setOauthToken] = useState("");
   const [oauthTokenDetected, setOauthTokenDetected] = useState(false);
   const [oauthChecking, setOauthChecking] = useState(false);
@@ -174,6 +178,8 @@ export default function SetupPage() {
   const [jiraBaseUrl, setJiraBaseUrl] = useState("");
   const [jiraEmail, setJiraEmail] = useState("");
   const [jiraApiToken, setJiraApiToken] = useState("");
+  const [jiraValidated, setJiraValidated] = useState(false);
+  const [jiraError, setJiraError] = useState("");
   const [jiraProjectKey, setJiraProjectKey] = useState("");
 
   // Check runtime and GitHub App status on mount
@@ -213,7 +219,7 @@ export default function SetupPage() {
       if (githubAppConfigured || (githubEnabled && githubToken))
         fetches.push(api.listUserRepos(githubToken || ""));
       if (gitlabEnabled && gitlabToken)
-        fetches.push(api.listGitlabRepos(gitlabToken, gitlabHost || undefined));
+        fetches.push(api.listGitlabRepos(gitlabToken, gitlabBaseUrl || undefined));
       if (codecommitEnabled && awsAccessKeyId && awsSecretAccessKey)
         fetches.push(
           api.listCodecommitRepos({
@@ -313,7 +319,7 @@ export default function SetupPage() {
     setLoading(true);
     setGitlabError("");
     try {
-      const res = await api.validateGitlabToken(token, gitlabHost || undefined);
+      const res = await api.validateGitlabToken(token, gitlabBaseUrl || undefined);
       if (res.valid && res.user) {
         setGitlabUser(res.user);
         setGitlabValidated(true);
@@ -349,13 +355,38 @@ export default function SetupPage() {
     setLoading(false);
   };
 
+  const validateJira = async () => {
+    if (!jiraBaseUrl.trim() || !jiraApiToken.trim()) return;
+    setLoading(true);
+    setJiraError("");
+    try {
+      const res = await api.validateJiraPat(jiraBaseUrl.trim(), jiraApiToken.trim());
+      if (res.valid) {
+        setJiraValidated(true);
+      } else {
+        setJiraError(res.error ?? "Invalid Jira PAT");
+      }
+    } catch (err) {
+      setJiraError(err instanceof Error ? err.message : "Validation failed");
+    }
+    setLoading(false);
+  };
+
   const validateAnthropic = async (keyOverride?: string) => {
-    const key = keyOverride ?? anthropicKey;
+    const key =
+      keyOverride ?? (claudeAuthMode === "gateway-token" ? claudeAuthToken : anthropicKey);
     if (!key.trim()) return;
+    if (claudeAuthMode === "gateway-token" && !claudeBaseUrl.trim()) {
+      setAnthropicError("Claude API URL is required");
+      return;
+    }
     setLoading(true);
     setAnthropicError("");
     try {
-      const res = await api.validateAnthropicKey(key);
+      const res =
+        claudeAuthMode === "gateway-token"
+          ? await api.validateClaudeGateway(claudeBaseUrl.trim(), key)
+          : await api.validateAnthropicKey(key);
       if (res.valid) {
         setAnthropicValidated(true);
       } else {
@@ -487,8 +518,19 @@ export default function SetupPage() {
       }
       if (gitlabEnabled && gitlabToken.trim() && gitlabValidated) {
         await api.createSecret({ name: "GITLAB_TOKEN", value: gitlabToken });
-        if (gitlabHost && gitlabHost !== "gitlab.com") {
-          await api.createSecret({ name: "GITLAB_HOST", value: gitlabHost });
+        if (gitlabBaseUrl.trim()) {
+          const normalizedGitlabBaseUrl = /^https?:\/\//i.test(gitlabBaseUrl.trim())
+            ? gitlabBaseUrl.trim()
+            : `https://${gitlabBaseUrl.trim()}`;
+          await api.createSecret({ name: "GITLAB_BASE_URL", value: normalizedGitlabBaseUrl });
+          try {
+            await api.createSecret({
+              name: "GITLAB_HOST",
+              value: new URL(normalizedGitlabBaseUrl).host,
+            });
+          } catch {
+            /* legacy helper is best-effort */
+          }
         }
       }
       if (codecommitEnabled && awsAccessKeyId.trim() && awsSecretAccessKey.trim() && awsValidated) {
@@ -518,6 +560,18 @@ export default function SetupPage() {
           value: anthropicKey,
           scope: agentSecretScope,
         });
+      }
+      if (
+        claudeAuthMode === "gateway-token" &&
+        claudeBaseUrl.trim() &&
+        claudeAuthToken.trim() &&
+        anthropicValidated
+      ) {
+        await api.createSecret({ name: "ANTHROPIC_BASE_URL", value: claudeBaseUrl.trim() });
+        await api.createSecret({ name: "ANTHROPIC_AUTH_TOKEN", value: claudeAuthToken.trim() });
+      }
+      if (companyCaPem.trim()) {
+        await api.createSecret({ name: "COMPANY_CA_PEM", value: companyCaPem.trim() });
       }
       if (claudeAuthMode === "oauth-token" && oauthToken.trim()) {
         await api.createSecret({
@@ -622,6 +676,11 @@ export default function SetupPage() {
   const saveReposStep = async () => {
     setLoading(true);
     try {
+      const missingImage = repos.find((repo) => !repo.customDockerImageUrl?.trim());
+      if (missingImage) {
+        toast.error(`Custom image is required for ${missingImage.fullName ?? missingImage.url}`);
+        return;
+      }
       for (const repo of repos) {
         if (repo.fullName && repo.url) {
           try {
@@ -630,6 +689,7 @@ export default function SetupPage() {
               fullName: repo.fullName,
               defaultBranch: repo.defaultBranch,
               isPrivate: repo.isPrivate,
+              customDockerImageUrl: repo.customDockerImageUrl?.trim(),
             });
           } catch (err) {
             // Skip 409 Conflict (repo already exists) — this is expected on re-runs
@@ -748,6 +808,11 @@ export default function SetupPage() {
       // All external trackers the user added (Linear / Notion / Jira)
       for (const tracker of addedTrackers) {
         await api.createTicketProvider({ source: tracker.source, config: tracker.config });
+      }
+
+      if (jiraBaseUrl.trim() && jiraApiToken.trim() && jiraValidated) {
+        await api.createSecret({ name: "JIRA_BASE_URL", value: jiraBaseUrl.trim() });
+        await api.createSecret({ name: "JIRA_PAT", value: jiraApiToken.trim() });
       }
 
       // If the user filled in the draft form but didn't click "Add", save it too
@@ -972,7 +1037,7 @@ export default function SetupPage() {
               {gitlabEnabled && (
                 <>
                   <a
-                    href={`https://${gitlabHost || "gitlab.com"}/-/user_settings/personal_access_tokens?name=Optio+Agent&scopes=api,read_user,read_repository,write_repository`}
+                    href={`${(gitlabBaseUrl || "https://gitlab.com").replace(/\/$/, "")}/-/user_settings/personal_access_tokens?name=Optio+Agent&scopes=api,read_user,read_repository,write_repository`}
                     target="_blank"
                     rel="noopener noreferrer"
                     className="inline-flex items-center gap-2 px-4 py-2 rounded-md bg-bg-hover text-text text-sm hover:bg-border transition-colors"
@@ -981,19 +1046,16 @@ export default function SetupPage() {
                     Create GitLab Personal Access Token
                   </a>
                   <div>
-                    <label className="block text-sm text-text-muted mb-1.5">
-                      GitLab Host{" "}
-                      <span className="text-text-muted/60">(leave default for gitlab.com)</span>
-                    </label>
+                    <label className="block text-sm text-text-muted mb-1.5">GitLab Base URL</label>
                     <input
                       type="text"
-                      value={gitlabHost}
+                      value={gitlabBaseUrl}
                       onChange={(e) => {
-                        setGitlabHost(e.target.value);
+                        setGitlabBaseUrl(e.target.value);
                         setGitlabValidated(false);
                         setGitlabError("");
                       }}
-                      placeholder="gitlab.com"
+                      placeholder="https://gitlab.internal"
                       className="w-full px-3 py-2 rounded-md bg-bg border border-border text-sm focus:outline-none focus:border-primary"
                     />
                   </div>
@@ -1291,6 +1353,78 @@ export default function SetupPage() {
                   <label
                     className={cn(
                       "flex items-start gap-3 p-3 rounded-md border cursor-pointer transition-colors",
+                      claudeAuthMode === "gateway-token"
+                        ? "border-primary bg-primary/5"
+                        : "border-border hover:border-text-muted",
+                    )}
+                  >
+                    <input
+                      type="radio"
+                      name="claude-auth"
+                      checked={claudeAuthMode === "gateway-token"}
+                      onChange={() => setClaudeAuthMode("gateway-token")}
+                      className="mt-0.5"
+                    />
+                    <div className="flex-1">
+                      <span className="text-sm font-medium">Use Claude gateway</span>
+                      <p className="text-xs text-text-muted mt-0.5">
+                        Uses your intranet Anthropic/OpenAI-compatible endpoint for Claude Code.
+                      </p>
+                      {claudeAuthMode === "gateway-token" && (
+                        <div className="mt-2 space-y-2">
+                          <input
+                            value={claudeBaseUrl}
+                            onChange={(e) => {
+                              setClaudeBaseUrl(e.target.value);
+                              setAnthropicValidated(false);
+                              setAnthropicError("");
+                            }}
+                            placeholder="https://claude-gateway.internal"
+                            className="w-full px-3 py-2 rounded-md bg-bg-card border border-border text-sm focus:outline-none focus:border-primary"
+                          />
+                          <div className="flex gap-2">
+                            <input
+                              type="password"
+                              value={claudeAuthToken}
+                              onChange={(e) => {
+                                setClaudeAuthToken(e.target.value);
+                                setAnthropicValidated(false);
+                                setAnthropicError("");
+                              }}
+                              placeholder="Bearer token"
+                              className="flex-1 px-3 py-2 rounded-md bg-bg-card border border-border text-sm focus:outline-none focus:border-primary"
+                            />
+                            <button
+                              onClick={() => validateAnthropic()}
+                              disabled={
+                                loading ||
+                                !claudeBaseUrl.trim() ||
+                                !claudeAuthToken.trim() ||
+                                anthropicValidated
+                              }
+                              className="px-3 py-2 rounded-md bg-bg-hover text-sm hover:bg-border disabled:opacity-50"
+                            >
+                              {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : "Validate"}
+                            </button>
+                          </div>
+                          {anthropicError && (
+                            <p className="text-error text-xs flex items-center gap-1">
+                              <AlertCircle className="w-3 h-3" /> {anthropicError}
+                            </p>
+                          )}
+                          {anthropicValidated && (
+                            <p className="text-success text-xs flex items-center gap-1">
+                              <CheckCircle className="w-3 h-3" /> Gateway valid
+                            </p>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  </label>
+
+                  <label
+                    className={cn(
+                      "flex items-start gap-3 p-3 rounded-md border cursor-pointer transition-colors",
                       claudeAuthMode === "oauth-token"
                         ? "border-primary bg-primary/5"
                         : "border-border hover:border-text-muted",
@@ -1542,6 +1676,16 @@ export default function SetupPage() {
                       )}
                     </div>
                   </label>
+                </div>
+                <div className="space-y-1">
+                  <label className="text-xs text-text-muted">Company CA PEM (optional)</label>
+                  <textarea
+                    value={companyCaPem}
+                    onChange={(e) => setCompanyCaPem(e.target.value)}
+                    placeholder="-----BEGIN CERTIFICATE-----"
+                    rows={4}
+                    className="w-full px-3 py-2 rounded-md bg-bg-card border border-border text-xs font-mono focus:outline-none focus:border-primary resize-none"
+                  />
                 </div>
               </div>
 
@@ -2049,6 +2193,7 @@ export default function SetupPage() {
                                   fullName: sr.fullName,
                                   defaultBranch: sr.defaultBranch,
                                   isPrivate: sr.isPrivate,
+                                  customDockerImageUrl: "",
                                   validated: true,
                                 },
                               ]);
@@ -2096,9 +2241,34 @@ export default function SetupPage() {
 
               {/* Selected repos summary */}
               {repos.length > 0 && (
-                <div className="flex items-center gap-2 text-xs text-success">
-                  <CheckCircle className="w-3 h-3" />
-                  {repos.length} repo{repos.length !== 1 ? "s" : ""} selected
+                <div className="space-y-2">
+                  <div className="flex items-center gap-2 text-xs text-success">
+                    <CheckCircle className="w-3 h-3" />
+                    {repos.length} repo{repos.length !== 1 ? "s" : ""} selected
+                  </div>
+                  <div className="space-y-2">
+                    {repos.map((repo) => (
+                      <div key={repo.url} className="grid gap-1.5">
+                        <label className="text-xs text-text-muted">
+                          Custom sandbox image for {repo.fullName ?? repo.url}
+                        </label>
+                        <input
+                          value={repo.customDockerImageUrl ?? ""}
+                          onChange={(e) =>
+                            setRepos((prev) =>
+                              prev.map((r) =>
+                                r.url === repo.url
+                                  ? { ...r, customDockerImageUrl: e.target.value }
+                                  : r,
+                              ),
+                            )
+                          }
+                          placeholder="registry.internal/optio/claude-sandbox:main"
+                          className="w-full px-3 py-2 rounded-md bg-bg border border-border text-sm focus:outline-none focus:border-primary"
+                        />
+                      </div>
+                    ))}
+                  </div>
                 </div>
               )}
 
@@ -2112,7 +2282,7 @@ export default function SetupPage() {
                     onKeyDown={(e) => {
                       if (e.key === "Enter" && manualRepoUrl.trim()) {
                         const url = manualRepoUrl.trim();
-                        setRepos([...repos, { url, validated: false }]);
+                        setRepos([...repos, { url, customDockerImageUrl: "", validated: false }]);
                         setManualRepoUrl("");
                       }
                     }}
@@ -2123,7 +2293,7 @@ export default function SetupPage() {
                     onClick={() => {
                       if (!manualRepoUrl.trim()) return;
                       const url = manualRepoUrl.trim();
-                      setRepos([...repos, { url, validated: false }]);
+                      setRepos([...repos, { url, customDockerImageUrl: "", validated: false }]);
                       setManualRepoUrl("");
                     }}
                     disabled={!manualRepoUrl.trim()}
@@ -2407,14 +2577,20 @@ export default function SetupPage() {
                         <label className="block text-xs text-text-muted mb-1">Base URL</label>
                         <input
                           value={jiraBaseUrl}
-                          onChange={(e) => setJiraBaseUrl(e.target.value)}
-                          placeholder="https://your-org.atlassian.net"
+                          onChange={(e) => {
+                            setJiraBaseUrl(e.target.value);
+                            setJiraValidated(false);
+                            setJiraError("");
+                          }}
+                          placeholder="https://jira.internal"
                           className="w-full px-3 py-2 rounded-md bg-bg-card border border-border text-sm focus:outline-none focus:border-primary"
                         />
                       </div>
                       <div className="grid grid-cols-2 gap-3">
                         <div>
-                          <label className="block text-xs text-text-muted mb-1">Email</label>
+                          <label className="block text-xs text-text-muted mb-1">
+                            Email (legacy sync optional)
+                          </label>
                           <input
                             value={jiraEmail}
                             onChange={(e) => setJiraEmail(e.target.value)}
@@ -2422,14 +2598,39 @@ export default function SetupPage() {
                           />
                         </div>
                         <div>
-                          <label className="block text-xs text-text-muted mb-1">API Token</label>
+                          <label className="block text-xs text-text-muted mb-1">Jira PAT</label>
                           <input
                             type="password"
                             value={jiraApiToken}
-                            onChange={(e) => setJiraApiToken(e.target.value)}
+                            onChange={(e) => {
+                              setJiraApiToken(e.target.value);
+                              setJiraValidated(false);
+                              setJiraError("");
+                            }}
                             className="w-full px-3 py-2 rounded-md bg-bg-card border border-border text-sm focus:outline-none focus:border-primary"
                           />
                         </div>
+                      </div>
+                      <div className="flex items-center gap-3">
+                        <button
+                          onClick={validateJira}
+                          disabled={
+                            loading || !jiraBaseUrl.trim() || !jiraApiToken.trim() || jiraValidated
+                          }
+                          className="px-3 py-1.5 rounded-md bg-bg-card border border-border text-sm hover:bg-bg-hover disabled:opacity-50"
+                        >
+                          {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : "Validate PAT"}
+                        </button>
+                        {jiraError && (
+                          <span className="text-error text-xs flex items-center gap-1">
+                            <AlertCircle className="w-3 h-3" /> {jiraError}
+                          </span>
+                        )}
+                        {jiraValidated && (
+                          <span className="text-success text-xs flex items-center gap-1">
+                            <CheckCircle className="w-3 h-3" /> Jira PAT valid
+                          </span>
+                        )}
                       </div>
                       <div>
                         <label className="block text-xs text-text-muted mb-1">

@@ -8,6 +8,7 @@ import {
   DEFAULT_MAX_TURNS_CODING,
   DEFAULT_MAX_TURNS_REVIEW,
   type PresetImageId,
+  type RepoImageConfig,
   msUntilOffPeak,
   classifyError,
   parseRepoUrl,
@@ -241,10 +242,24 @@ export function startTaskWorker() {
 
         // Get agent adapter and build config
         const adapter = getAdapter(task.agentType);
+        const storedClaudeAuthMode = (await retrieveSecretWithFallback(
+          "CLAUDE_AUTH_MODE",
+          "global",
+          taskWorkspaceId,
+        ).catch(() => null)) as any;
+        const hasClaudeGateway =
+          !!(await retrieveSecretWithFallback(
+            "ANTHROPIC_AUTH_TOKEN",
+            "global",
+            taskWorkspaceId,
+          ).catch(() => null)) &&
+          !!(await retrieveSecretWithFallback(
+            "ANTHROPIC_BASE_URL",
+            "global",
+            taskWorkspaceId,
+          ).catch(() => null));
         const claudeAuthMode =
-          ((await retrieveSecretWithFallback("CLAUDE_AUTH_MODE", "global", taskWorkspaceId).catch(
-            () => null,
-          )) as any) ?? "api-key";
+          storedClaudeAuthMode ?? (hasClaudeGateway ? "gateway-token" : "api-key");
         const codexAuthMode =
           ((await retrieveSecretWithFallback("CODEX_AUTH_MODE", "global", taskWorkspaceId).catch(
             () => null,
@@ -619,7 +634,12 @@ export function startTaskWorker() {
         const allEnv: Record<string, string> = { ...agentConfig.env, ...resolvedSecrets };
 
         // Resolve git platform tokens (not part of adapter requiredSecrets since they're infra-level)
-        for (const secretName of ["GITHUB_TOKEN", "GITLAB_TOKEN", "GITLAB_HOST"]) {
+        for (const secretName of [
+          "GITHUB_TOKEN",
+          "GITLAB_TOKEN",
+          "GITLAB_HOST",
+          "GITLAB_BASE_URL",
+        ]) {
           if (!allEnv[secretName]) {
             const val = await retrieveSecretWithFallback(
               secretName,
@@ -660,6 +680,17 @@ export function startTaskWorker() {
         }
         if (repoConfig?.setupCommands) {
           allEnv.OPTIO_SETUP_COMMANDS = repoConfig.setupCommands;
+        }
+        const companyCaPem = await retrieveSecretWithFallback(
+          "COMPANY_CA_PEM",
+          "global",
+          taskWorkspaceId,
+        ).catch(() => null);
+        if (companyCaPem) {
+          allEnv.OPTIO_COMPANY_CA_PEM = companyCaPem as string;
+          allEnv.OPTIO_COMPANY_CA_PATH = "/home/agent/.optio-company-ca.pem";
+          allEnv.NODE_EXTRA_CA_CERTS = allEnv.OPTIO_COMPANY_CA_PATH;
+          allEnv.GIT_SSL_CAINFO = allEnv.OPTIO_COMPANY_CA_PATH;
         }
 
         // For max-subscription mode, fetch the OAuth token from the auth proxy
@@ -722,6 +753,15 @@ export function startTaskWorker() {
           ...(allEnv.GITHUB_TOKEN ? { GITHUB_TOKEN: allEnv.GITHUB_TOKEN } : {}),
           ...(allEnv.GITLAB_TOKEN ? { GITLAB_TOKEN: allEnv.GITLAB_TOKEN } : {}),
           ...(allEnv.GITLAB_HOST ? { GITLAB_HOST: allEnv.GITLAB_HOST } : {}),
+          ...(allEnv.GITLAB_BASE_URL ? { GITLAB_BASE_URL: allEnv.GITLAB_BASE_URL } : {}),
+          ...(allEnv.OPTIO_COMPANY_CA_PEM
+            ? {
+                OPTIO_COMPANY_CA_PEM: allEnv.OPTIO_COMPANY_CA_PEM,
+                OPTIO_COMPANY_CA_PATH: allEnv.OPTIO_COMPANY_CA_PATH,
+                NODE_EXTRA_CA_CERTS: allEnv.NODE_EXTRA_CA_CERTS,
+                GIT_SSL_CAINFO: allEnv.GIT_SSL_CAINFO,
+              }
+            : {}),
           ...(process.env.GITHUB_APP_BOT_NAME
             ? { GITHUB_APP_BOT_NAME: process.env.GITHUB_APP_BOT_NAME }
             : {}),
@@ -748,9 +788,7 @@ export function startTaskWorker() {
         // Get or create a repo pod (with multi-pod scheduling)
         log.info("Getting repo pod");
         const isRetry = (task.retryCount ?? 0) > 0;
-        const imageConfig = repoConfig
-          ? { preset: (repoConfig.imagePreset ?? "base") as PresetImageId }
-          : undefined;
+        const imageConfig = buildRepoImageConfig(repoConfig);
         const pod = await repoPool.getOrCreateRepoPod(
           task.repoUrl,
           task.repoBranch,
@@ -1662,6 +1700,15 @@ export function buildInitialClaudeStreamMessage(prompt: string): string {
       },
     }) + "\n"
   );
+}
+
+export function buildRepoImageConfig(
+  repoConfig?: { customDockerImageUrl?: string | null; imagePreset?: string | null } | null,
+): RepoImageConfig | undefined {
+  if (!repoConfig) return undefined;
+  const customImage = repoConfig.customDockerImageUrl?.trim();
+  if (customImage) return { customImage };
+  return { preset: (repoConfig.imagePreset ?? "base") as PresetImageId };
 }
 
 export function buildAgentCommand(

@@ -547,6 +547,13 @@
       "when": 1777400000000,
       "tag": "1777400000_session_chat_events",
       "breakpoints": true
+    },
+    {
+      "idx": 78,
+      "version": "7",
+      "when": 1782337752000,
+      "tag": "1782337752_custom_docker_image_url",
+      "breakpoints": true
     }
   ]
 }

@@ -10,6 +10,7 @@ import type {
   RepoMetadata,
   RepoContent,
 } from "@optio/shared";
+import { intranetFetch } from "../intranet-fetch.js";
 
 export class GitLabPlatform implements GitPlatform {
   readonly type = "gitlab" as const;
@@ -37,7 +38,7 @@ export class GitLabPlatform implements GitPlatform {
   }
 
   private async fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
-    const res = await fetch(url, init);
+    const res = await intranetFetch(url, init);
     if (!res.ok) {
       const body = await res.text().catch(() => "");
       throw new Error(`GitLab API error ${res.status}: ${body}`);
@@ -312,7 +313,7 @@ export class GitLabPlatform implements GitPlatform {
     ri: RepoIdentifier,
     label: { name: string; color: string; description?: string },
   ): Promise<void> {
-    const res = await fetch(this.url(ri, "/labels"), {
+    const res = await intranetFetch(this.url(ri, "/labels"), {
       method: "POST",
       headers: this.headers(true),
       body: JSON.stringify({

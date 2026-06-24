@@ -2,6 +2,10 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { GitLabPlatform } from "./gitlab.js";
 import type { RepoIdentifier } from "@optio/shared";
 
+vi.mock("../secret-service.js", () => ({
+  retrieveSecret: vi.fn().mockRejectedValue(new Error("not found")),
+}));
+
 const ri: RepoIdentifier = {
   platform: "gitlab",
   host: "gitlab.com",

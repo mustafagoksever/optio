@@ -9,6 +9,9 @@ export const ANTHROPIC_CATALOG: ProviderCatalog = {
   provider: "anthropic",
   label: "Claude Code",
   modelField: "claudeModel",
+  modelIsFreeText: true,
+  modelPlaceholder: "claude-sonnet-4-6 or custom model id",
+  modelHelpText: "Choose a discovered gateway model or type a custom model id.",
   models: [
     {
       id: "claude-opus-4-8",

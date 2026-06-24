@@ -55,6 +55,7 @@ export default function RepoDetailPage({ params }: { params: Promise<{ id: strin
 
   // Editable fields
   const [imagePreset, setImagePreset] = useState("base");
+  const [customDockerImageUrl, setCustomDockerImageUrl] = useState("");
   const [extraPackages, setExtraPackages] = useState("");
   const [setupCommands, setSetupCommands] = useState("");
   const [customDockerfile, setCustomDockerfile] = useState("");
@@ -144,6 +145,7 @@ export default function RepoDetailPage({ params }: { params: Promise<{ id: strin
         const r = res.repo;
         setRepo(r);
         setImagePreset(r.imagePreset ?? "base");
+        setCustomDockerImageUrl(r.customDockerImageUrl ?? "");
         setExtraPackages(r.extraPackages ?? "");
         setSetupCommands(r.setupCommands ?? "");
         setCustomDockerfile(r.customDockerfile ?? "");
@@ -241,6 +243,7 @@ export default function RepoDetailPage({ params }: { params: Promise<{ id: strin
     try {
       await api.updateRepo(id, {
         imagePreset,
+        customDockerImageUrl: customDockerImageUrl.trim() || null,
         extraPackages: extraPackages || undefined,
         setupCommands: setupCommands || undefined,
         customDockerfile: customDockerfile || null,
@@ -1615,8 +1618,17 @@ export default function RepoDetailPage({ params }: { params: Promise<{ id: strin
       <section className="p-5 rounded-xl border border-border/50 bg-bg-card space-y-3">
         <h2 className="text-sm font-medium">Container Image</h2>
         <p className="text-xs text-text-muted">
-          Choose the base image for agent pods working on this repo.
+          Set the custom sandbox image for agent pods working on this repo.
         </p>
+        <div>
+          <label className="block text-xs text-text-muted mb-1">Custom sandbox image URL</label>
+          <input
+            value={customDockerImageUrl}
+            onChange={(e) => setCustomDockerImageUrl(e.target.value)}
+            placeholder="registry.internal/optio/claude-sandbox:main"
+            className="w-full px-3 py-2 rounded-lg bg-bg border border-border text-sm focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary/20"
+          />
+        </div>
         <div className="grid gap-1.5">
           {(
             Object.entries(PRESET_IMAGES) as [

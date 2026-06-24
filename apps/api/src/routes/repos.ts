@@ -26,12 +26,14 @@ const createRepoSchema = z
     fullName: z.string().min(1).describe("owner/repo slug"),
     defaultBranch: z.string().optional().describe("Default branch name (e.g. `main`)"),
     isPrivate: z.boolean().optional(),
+    customDockerImageUrl: z.string().min(1).optional(),
   })
   .describe("Body for adding a repository to Optio");
 
 const updateRepoSchema = z
   .object({
     imagePreset: z.string().optional(),
+    customDockerImageUrl: z.string().min(1).nullable().optional(),
     extraPackages: z.string().optional(),
     setupCommands: z.string().optional(),
     customDockerfile: z.string().nullable().optional(),

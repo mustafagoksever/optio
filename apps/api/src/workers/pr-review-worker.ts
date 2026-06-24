@@ -24,7 +24,6 @@ import {
   PrReviewRunState,
   PrReviewState,
   DEFAULT_STALL_THRESHOLD_MS,
-  type PresetImageId,
 } from "@optio/shared";
 import { getAdapter } from "@optio/agent-adapters";
 import { db } from "../db/client.js";
@@ -41,6 +40,7 @@ import {
   resolveSecretsForSetup,
   retrieveSecretWithFallback,
 } from "../services/secret-service.js";
+import { buildRepoImageConfig } from "../services/repo-image-config.js";
 import { isGitHubAppConfigured } from "../services/github-app-service.js";
 import { getCredentialSecret } from "../services/credential-secret-service.js";
 import { publishEvent } from "../services/event-bus.js";
@@ -437,7 +437,12 @@ export function startPrReviewWorker() {
         );
         const allEnv: Record<string, string> = { ...agentConfig.env, ...resolvedSecrets };
 
-        for (const secretName of ["GITHUB_TOKEN", "GITLAB_TOKEN", "GITLAB_HOST"]) {
+        for (const secretName of [
+          "GITHUB_TOKEN",
+          "GITLAB_TOKEN",
+          "GITLAB_HOST",
+          "GITLAB_BASE_URL",
+        ]) {
           if (!allEnv[secretName]) {
             const val = await retrieveSecretWithFallback(secretName, "global", workspaceId).catch(
               () => null,
@@ -481,6 +486,7 @@ export function startPrReviewWorker() {
           ...(allEnv.GITHUB_TOKEN ? { GITHUB_TOKEN: allEnv.GITHUB_TOKEN } : {}),
           ...(allEnv.GITLAB_TOKEN ? { GITLAB_TOKEN: allEnv.GITLAB_TOKEN } : {}),
           ...(allEnv.GITLAB_HOST ? { GITLAB_HOST: allEnv.GITLAB_HOST } : {}),
+          ...(allEnv.GITLAB_BASE_URL ? { GITLAB_BASE_URL: allEnv.GITLAB_BASE_URL } : {}),
           ...(process.env.GITHUB_APP_BOT_NAME
             ? { GITHUB_APP_BOT_NAME: process.env.GITHUB_APP_BOT_NAME }
             : {}),
@@ -499,9 +505,7 @@ export function startPrReviewWorker() {
 
         const maxAgentsPerPod = repoConfig.maxAgentsPerPod ?? 2;
         const maxPodInstances = repoConfig.maxPodInstances ?? 1;
-        const imageConfig = repoConfig
-          ? { preset: (repoConfig.imagePreset ?? "base") as PresetImageId }
-          : undefined;
+        const imageConfig = buildRepoImageConfig(repoConfig);
         const pod = await repoPool.getOrCreateRepoPod(
           review.repoUrl,
           repoConfig.defaultBranch,
